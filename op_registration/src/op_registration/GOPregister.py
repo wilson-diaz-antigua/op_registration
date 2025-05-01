@@ -11,4 +11,3 @@ def main() -> None:
 
 main.add_command(op_registration.set_credentials)
 main.add_command(op_registration.schedule_registration)
-main.add_command(op_registration.set_registration)

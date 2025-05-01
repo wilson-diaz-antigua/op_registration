@@ -79,7 +79,6 @@ def set_credentials():
     return credentials
 
 
-@click.command(name="set-registration")
 def set_registration():
     """
     Main function to execute the script for Open Play registration.
@@ -274,7 +273,9 @@ def run_automation():
 
 @click.command(name="run")
 def schedule_registration():
+
     set_registration()
+    click.echo("Registration scheduled. The script will run this Friday at 12:00 PM.")
     schedule.every().friday.at("12:00").do(run_automation)
     while 1:
         n = schedule.idle_seconds()
