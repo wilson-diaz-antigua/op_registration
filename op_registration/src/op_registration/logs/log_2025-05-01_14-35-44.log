@@ -1,0 +1,2 @@
+2025-05-01 14:35:44,779 [DEBUG] asyncio: Using selector: KqueueSelector
+2025-05-01 14:35:46,318 [DEBUG] asyncio: Using selector: KqueueSelector

@@ -3,14 +3,17 @@ import os
 import time
 from datetime import datetime
 
+import click
 import schedule
 from dotenv import load_dotenv, set_key
 from InquirerPy import inquirer, prompt
 from playwright.sync_api import Playwright, TimeoutError, sync_playwright
+from pync import Notifier
 
+log_path = os.path.dirname(__file__)
 # Create logs directory if it doesn't exist
-os.makedirs("logs", exist_ok=True)
-
+os.makedirs(os.path.join(log_path, "logs"), exist_ok=True)
+os.makedirs(os.path.join(log_path, "debug_screenshot"), exist_ok=True)
 # Generate a timestamped log file name
 log_filename = datetime.now().strftime("logs/log_%Y-%m-%d_%H-%M-%S.log")
 
@@ -19,7 +22,7 @@ logging.basicConfig(
     level=logging.DEBUG,  # Could also use INFO, WARNING, ERROR, CRITICAL
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler(log_filename),
+        logging.FileHandler(os.path.join(log_path, log_filename)),  # Log to file
         logging.StreamHandler(),  # Print logs to console
     ],
 )
@@ -41,10 +44,11 @@ def load_env_variables():
 def save_to_env(env_path, data):
     """Save key-value pairs to the .env file."""
     for key, value in data.items():
-        set_key(env_path, key.upper(), value.strip())
+        set_key(env_path, key.upper(), (value or "").strip())
 
 
-def prompt_user_for_missing_credentials(credentials):
+@click.command(name="set-credentials")
+def set_credentials():
     """
     Prompt the user to input any missing credentials.
 
@@ -60,20 +64,72 @@ def prompt_user_for_missing_credentials(credentials):
               by user input.
     """
     """Prompt user for missing credentials."""
-    if not credentials["email"]:
-        credentials["email"] = inquirer.text(message="Enter your email").execute()
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    credentials = load_env_variables()
 
-    if not credentials["password"]:
-        credentials["password"] = inquirer.secret(
-            message="Enter your password"
-        ).execute()
+    credentials["email"] = inquirer.text(message="Enter your email").execute()
 
-    if not credentials["signature"]:
-        credentials["signature"] = inquirer.text(
-            message="Enter your signature"
-        ).execute()
+    credentials["password"] = inquirer.secret(message="Enter your password").execute()
 
+    credentials["signature"] = inquirer.text(message="Enter your signature").execute()
+    save_to_env(env_path, credentials)
+    click.echo(
+        "Credentials saved to .env file. You can now run the script without entering them again."
+    )
     return credentials
+
+
+@click.command(name="set-registration")
+def set_registration():
+    """
+    Main function to execute the script for Open Play registration.
+
+    This function handles the entire registration process for Gotham volleyball open play events by:
+    1. Loading environment variables for credentials
+    2. Prompting the user for the event URL and preferred positions
+    3. Requesting any missing credentials from the user
+    4. Saving credentials to the .env file
+    5. Launching a Playwright automated browser session to complete the registration
+
+    No parameters required as all inputs are collected through interactive prompts.
+
+    Dependencies:
+        - os
+        - PyInquirer (prompt)
+        - python-dotenv (for .env file handling)
+        - playwright
+
+    Returns:
+        None
+    """
+    """Main function to execute the script for Open Play registration."""
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+
+    results = prompt(
+        [
+            {
+                "type": "input",
+                "message": "Enter the url of the event you want to register for",
+                "name": "url",
+                "multiline": False,
+            },
+            {
+                "type": "checkbox",
+                "name": "positions",
+                "message": "Select your positions (select with spacebar)",
+                "choices": ["Setter", "Outside", "Middle", "Opposite"],
+            },
+        ]
+    )
+
+    credentials = load_env_variables()
+
+    for key, value in results.items():
+        if key == "positions":
+            value = ",".join(value)
+        credentials[key] = value
+
+    save_to_env(env_path, credentials)
 
 
 def handle_registration(page, framePage, email, password, signature, positions):
@@ -127,9 +183,13 @@ def handle_registration(page, framePage, email, password, signature, positions):
     framePage.locator("#electronicSignature").click()
     framePage.locator("#electronicSignature").fill(signature)
     framePage.locator("#register-submit").click()
+    Notifier.notify(
+        "You have successfully registered for Open Play.",
+        title="Registration Complete",
+    )
 
 
-def run(playwright: Playwright, credentials):
+def launch_registration_process(playwright: Playwright, credentials):
     """Run the Playwright automation."""
     browser = playwright.chromium.launch(headless=False)
     context = browser.new_context(
@@ -150,15 +210,29 @@ def run(playwright: Playwright, credentials):
             if framePage.locator(
                 'a[class~="btn"][class~="large-btn"][class~="disabled"]'
             ).is_visible():
+                Notifier.notify(
+                    "Open Play is at capacity.",
+                    title="Registration Status",
+                )
                 logging.info("Open Play is at capacity")
             elif (
                 framePage.locator("a.btn.right:has-text('Pay Now')").is_visible()
                 or framePage.locator("em.site-notice:has-text('Sold Out')").is_visible()
             ):
+                Notifier.notify(
+                    "You are already registered or sold out.",
+                    title="Registration Status",
+                )
                 logging.info("Already registered or sold out")
             else:
+                Notifier.notify(
+                    "Open Play registration link not found.",
+                    title="Registration Error",
+                )
                 logging.error("Register link not found")
-            page.screenshot(path="error_screenshot.png")
+            page.screenshot(
+                path=os.path.join(log_path, "debug_screenshot", "error_screenshot.png")
+            )
             return
 
         handle_registration(
@@ -172,7 +246,9 @@ def run(playwright: Playwright, credentials):
 
     except TimeoutError as e:
         logging.error(f"TimeoutError: {e}")
-        page.screenshot(path="error_screenshot.png")
+        page.screenshot(
+            path=os.path.join(log_path, "debug_screenshot", "error_screenshot.png")
+        )
         logging.info("Screenshot saved as error_screenshot.png")
     finally:
         context.close()
@@ -186,65 +262,26 @@ def clear_url():
     logging.info("URL cleared from .env file.")
 
 
-def register_for_open_play():
-    """
-    Main function to execute the script for Open Play registration.
-
-    This function handles the entire registration process for Gotham volleyball open play events by:
-    1. Loading environment variables for credentials
-    2. Prompting the user for the event URL and preferred positions
-    3. Requesting any missing credentials from the user
-    4. Saving credentials to the .env file
-    5. Launching a Playwright automated browser session to complete the registration
-
-    No parameters required as all inputs are collected through interactive prompts.
-
-    Dependencies:
-        - os
-        - PyInquirer (prompt)
-        - python-dotenv (for .env file handling)
-        - playwright
-
-    Returns:
-        None
-    """
-    """Main function to execute the script for Open Play registration."""
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    credentials = load_env_variables()
-
-    results = prompt(
-        [
-            {
-                "type": "input",
-                "message": "Enter the url of the event you want to register for",
-                "name": "url",
-                "multiline": False,
-            },
-            {
-                "type": "checkbox",
-                "name": "positions",
-                "message": "Select your positions (select with space)",
-                "choices": ["Setter", "Outside", "Middle", "Opposite"],
-            },
-        ]
-    )
-
-    credentials = prompt_user_for_missing_credentials(credentials)
-
-    for key, value in results.items():
-        if key == "positions":
-            value = ",".join(value)
-        credentials[key] = value
-
-    save_to_env(env_path, credentials)
-
+def run_automation():
+    credentials = set_credentials()
+    """Execute the registration process using Playwright."""
     with sync_playwright() as playwright:
-        run(playwright, credentials)
+        launch_registration_process(playwright, credentials)
+
+    clear_url()
+    return schedule.CancelJob
 
 
-if __name__ == "__main__":
-    schedule.every().friday.at("12:00").do(register_for_open_play)
-    schedule.every().friday.at("12:03").do(clear_url)
-    while True:
+@click.command(name="run")
+def schedule_registration():
+    set_registration()
+    schedule.every().friday.at("12:00").do(run_automation)
+    while 1:
+        n = schedule.idle_seconds()
+        if n is None:
+            # no more jobs
+            break
+        elif n > 0:
+            # sleep exactly the right amount of time
+            time.sleep(n)
         schedule.run_pending()
-        time.sleep(30 * 60)  # Sleep for 30 minutes
